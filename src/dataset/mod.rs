@@ -165,6 +165,7 @@ impl Deref for Pr {
 /// * `targets`: a two-/one-dimension matrix with dimensionality (nsamples, ntargets)
 /// * `weights`: optional weights for each sample with dimensionality (nsamples)
 /// * `feature_names`: optional descriptive feature names with dimensionality (nfeatures)
+/// * `target_names`: optional descriptive target names with dimensionality (ntargets)
 ///
 /// # Trait bounds
 ///
@@ -181,6 +182,7 @@ where
 
     pub weights: Array1<f32>,
     feature_names: Vec<String>,
+    target_names: Vec<String>,
 }
 
 /// Targets with precomputed, counted labels
@@ -322,7 +324,28 @@ pub trait Labels {
     }
 
     fn labels(&self) -> Vec<Self::Elem> {
-        self.label_set().into_iter().flatten().collect()
+        self.label_set()
+            .into_iter()
+            .flatten()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn combined_labels<T>(&self, other: &T) -> Vec<Self::Elem>
+    where
+        T: Labels<Elem = <Self as Labels>::Elem>,
+    {
+        let mut combined = self.label_set();
+        combined.extend(other.label_set());
+
+        combined
+            .iter()
+            .flatten()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .cloned()
+            .collect()
     }
 }
 
@@ -330,7 +353,7 @@ pub trait Labels {
 mod tests {
     use super::*;
     use crate::error::Error;
-    use approx::assert_abs_diff_eq;
+    use approx::{assert_abs_diff_eq, assert_abs_diff_ne};
     use linfa_datasets::generate::make_dataset;
     use ndarray::{array, Array1, Array2, Axis};
     use rand::{rngs::SmallRng, SeedableRng};
@@ -342,6 +365,33 @@ mod tests {
         let target_distr = DiscreteUniform::new(0, 5).unwrap();
         let dataset = make_dataset(10, 5, 1, feat_distr, target_distr);
         assert!(dataset.into_single_target().targets.shape() == [10]);
+    }
+
+    #[test]
+    fn set_target_name() {
+        let dataset = Dataset::new(array![[1., 2.], [1., 2.]], array![0., 1.])
+            .with_target_names(vec!["test"]);
+        assert_eq!(dataset.target_names, vec!["test"]);
+    }
+
+    #[test]
+    fn empty_target_name() {
+        let dataset = Dataset::new(array![[1., 2.], [1., 2.]], array![[0., 1.], [2., 3.]]);
+        assert_eq!(dataset.target_names, Vec::<String>::new());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_wrong_feature_names_lenght() {
+        let _dataset = Dataset::new(array![[1., 2.], [1., 2.]], array![0., 1.])
+            .with_feature_names(vec!["test"]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_wrong_target_names_lenght() {
+        let _dataset = Dataset::new(array![[1., 2.], [1., 2.]], array![0., 1.])
+            .with_target_names(vec!["test", "bad"]);
     }
 
     #[test]
@@ -541,7 +591,8 @@ mod tests {
         let dataset = Dataset::new(
             array![[1., 2., 3., 4.], [5., 6., 7., 8.], [9., 10., 11., 12.]],
             array![[1, 2], [3, 4], [5, 6]],
-        );
+        )
+        .with_target_names(vec!["a", "b"]);
 
         let res = dataset
             .target_iter()
@@ -549,6 +600,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(res, &[array![1, 3, 5], array![2, 4, 6]]);
+
+        let mut iter = dataset.target_iter();
+        let first = iter.next();
+        let second = iter.next();
+
+        assert_eq!(vec!["a"], first.unwrap().target_names());
+        assert_eq!(vec!["b"], second.unwrap().target_names());
 
         let res = dataset
             .feature_iter()
@@ -991,5 +1049,25 @@ mod tests {
     fn negative_probability_unchecked() {
         let prob = -0.5;
         assert_abs_diff_eq!(Pr::new_unchecked(prob).0, prob);
+    }
+
+    #[test]
+    fn test_dataset_shuffle() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let f_names = vec!["f1", "f2", "f3"];
+        let t_names = vec!["t1"];
+        let dataset = Dataset::new(
+            array![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]],
+            array![0., 1., 3.],
+        )
+        .with_feature_names(f_names.clone())
+        .with_target_names(t_names.clone());
+
+        let shuffled = dataset.shuffle(&mut rng);
+
+        assert_abs_diff_ne!(dataset.records(), shuffled.records());
+        assert_abs_diff_ne!(dataset.targets(), shuffled.targets());
+        assert_eq!(f_names, shuffled.feature_names());
+        assert_eq!(t_names, shuffled.target_names());
     }
 }
